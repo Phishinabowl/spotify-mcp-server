@@ -7,6 +7,11 @@ import { fileURLToPath, URL } from 'node:url';
 import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import open from 'open';
 import { getSpotifyRequestToken } from './request-context.js';
+import {
+  onSessionClosed,
+  sessionAuthEnabled,
+  sessionToken,
+} from './session-auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(__dirname, '../spotify-config.json');
@@ -146,6 +151,10 @@ export function saveSpotifyConfig(config: SpotifyConfig): void {
 
 let cachedSpotifyApi: SpotifyApi | null = null;
 let cachedAccessToken: string | null = null;
+onSessionClosed(() => {
+  cachedSpotifyApi = null;
+  cachedAccessToken = null;
+});
 let refreshInFlight: Promise<SpotifyConfig> | null = null;
 
 function needsRefresh(config: SpotifyConfig, bufferMs: number): boolean {
@@ -203,7 +212,9 @@ export async function spotifyFetch<T = unknown>(
   const { method = 'GET', body, query } = options;
   // In HTTP auth mode (MCP_AUTH=spotify) the client supplies a fresh access
   // token per request; prefer it over the config-file flow.
-  const bearerToken = getSpotifyRequestToken();
+  const bearerToken =
+    getSpotifyRequestToken() ??
+    (sessionAuthEnabled() ? await sessionToken() : null);
   let config = bearerToken ? null : loadSpotifyConfig();
   if (config && needsRefresh(config, 0)) {
     config = await refreshSpotifyConfig(0);
@@ -252,6 +263,11 @@ export async function spotifyFetch<T = unknown>(
 
   // Some endpoints (DELETE, PUT) return empty body
   const text = await response.text();
+  if (
+    method !== 'GET' &&
+    !response.headers.get('content-type')?.includes('application/json')
+  )
+    return undefined as T;
   if (!text) return undefined as T;
   return JSON.parse(text) as T;
 }
@@ -260,7 +276,9 @@ export async function createSpotifyApi(): Promise<SpotifyApi> {
   // HTTP auth mode: use the per-request Bearer token directly. It is a live
   // Spotify access token, so there is nothing to refresh here. No refresh
   // token is passed, which is fine: withAccessToken only uses it on 401.
-  const bearerToken = getSpotifyRequestToken();
+  const bearerToken =
+    getSpotifyRequestToken() ??
+    (sessionAuthEnabled() ? await sessionToken() : null);
   if (bearerToken) {
     // Cache key is the hash of the full token so two different tokens can
     // never share a cached client, regardless of suffix collisions.
@@ -688,15 +706,6 @@ export async function handleSpotifyRequest<T>(
     const spotifyApi = await createSpotifyApi();
     return await action(spotifyApi);
   } catch (error) {
-    // Skip JSON parsing errors as these are actually successful operations
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (
-      errorMessage.includes('Unexpected token') ||
-      errorMessage.includes('Unexpected non-whitespace character') ||
-      errorMessage.includes('Exponent part is missing a number in JSON')
-    ) {
-      return undefined as T;
-    }
     // Rethrow other errors
     throw error;
   }

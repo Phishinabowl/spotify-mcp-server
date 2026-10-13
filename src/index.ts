@@ -7,7 +7,20 @@ import {
   serveHttp,
 } from './http.js';
 import { createServer } from './server.js';
+import { closeSession, sessionAuthEnabled } from './session-auth.js';
 import { createSpotifyApi } from './utils.js';
+
+if (sessionAuthEnabled()) {
+  process.stdin.once('end', closeSession);
+  process.once('SIGTERM', () => {
+    closeSession();
+    process.exit(0);
+  });
+  process.once('SIGINT', () => {
+    closeSession();
+    process.exit(0);
+  });
+}
 
 // Proactively refresh the Spotify token every 45 minutes so it never
 // expires mid-session (tokens last 60 minutes; this keeps a safe buffer).

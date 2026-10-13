@@ -30,7 +30,40 @@ export function defineTool<Args extends z.ZodRawShape>(definition: {
           description: definition.description,
           inputSchema: z.object(definition.schema),
         },
-        definition.handler,
+        (args, context) => {
+          if (
+            process.env.SPOTIFY_REQUIRE_DEVICE === 'true' &&
+            [
+              'playMusic',
+              'pausePlayback',
+              'resumePlayback',
+              'skipToNext',
+              'skipToPrevious',
+              'addToQueue',
+              'setVolume',
+              'adjustVolume',
+            ].includes(definition.name)
+          ) {
+            const input = args as Record<string, unknown>;
+            if (
+              !(
+                typeof (input.deviceId ?? input.device_id) === 'string' &&
+                String(input.deviceId ?? input.device_id).length > 0
+              )
+            ) {
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: 'An explicit deviceId is required; discover devices first',
+                  },
+                ],
+              };
+            }
+          }
+          return definition.handler(args, context);
+        },
       );
     },
   };

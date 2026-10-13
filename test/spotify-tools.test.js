@@ -133,7 +133,7 @@ const cases = [
   },
   {
     name: 'playMusic',
-    args: { type: 'track', id: 'track1' },
+    args: { type: 'track', id: 'track1', deviceId: 'device1' },
     http: [
       devices,
       {
@@ -141,8 +141,16 @@ const cases = [
         method: 'PUT',
         body: { uris: ['spotify:track:track1'] },
       },
+      {
+        url: 'me/player',
+        response: {
+          device: { id: 'device1' },
+          is_playing: true,
+          item: { uri: 'spotify:track:track1' },
+        },
+      },
     ],
-    text: /Now playing/,
+    text: /"accepted":true/,
   },
   {
     name: 'pausePlayback',
@@ -199,6 +207,7 @@ const cases = [
   },
   {
     name: 'resumePlayback',
+    args: { deviceId: 'device1' },
     http: [devices, { url: 'me/player/play?device_id=device1', method: 'PUT' }],
     text: /resumed/,
   },

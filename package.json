@@ -7,8 +7,8 @@
     "spotify-mcp": "./build/index.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
-    "auth": "tsc && node build/auth.js",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.chmodSync('build/index.js', '755'); fs.copyFileSync('src/callback-page.html', 'build/callback-page.html')\"",
+    "auth": "npm run build && node build/auth.js",
     "lint": "biome check --diagnostic-level=warn --error-on-warnings",
     "lint:fix": "biome check --write --unsafe",
     "typecheck": "tsc --noEmit",

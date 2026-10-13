@@ -5,11 +5,11 @@ import { handleSpotifyRequest, spotifyFetch } from './utils.js';
 
 /**
  * Ensures there is an active Spotify device before attempting playback.
- * If no device is currently active, transfers playback to the first available
- * device and waits briefly for it to become ready.
- * Returns the device_id to use, or empty string if none found.
+ * Requires the explicitly selected device; never falls back to another device.
  */
 async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
+  if (!preferredDeviceId)
+    throw new Error('An explicit deviceId is required; discover devices first');
   const data = await spotifyFetch<{
     devices: Array<{ id: string; is_active: boolean; name: string }>;
   }>('me/player/devices');
@@ -36,19 +36,9 @@ async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
     }
   }
 
-  // Use the already-active device if there is one
-  const active = devices.find((d) => d.is_active);
-  if (active) return active.id;
-
-  // No active device — transfer to the first available one
-  const target = devices[0];
-  await spotifyFetch('me/player', {
-    method: 'PUT',
-    body: { device_ids: [target.id], play: false },
-  });
-  // Give Spotify a moment to register the transfer before we start playback
-  await new Promise((r) => setTimeout(r, 600));
-  return target.id;
+  throw new Error(
+    'Requested Spotify device was not found; no fallback was selected',
+  );
 }
 
 const playMusic = defineTool({
@@ -57,7 +47,7 @@ const playMusic = defineTool({
     'Start playing a Spotify track, album, artist, or playlist. ' +
     'Pass a Spotify URI (e.g. spotify:track:xxx, spotify:album:xxx) via "uri". ' +
     'For albums/playlists you can also use "context_uri". ' +
-    'Device is selected automatically — "deviceId" or "device_id" are optional.',
+    'An explicit "deviceId" or "device_id" is required. Reports acceptance and observed state separately.',
   schema: {
     uri: z
       .string()
@@ -84,8 +74,22 @@ const playMusic = defineTool({
     device_id: z.string().optional().describe('Alias for deviceId'),
     offset: z
       .number()
+      .int()
+      .nonnegative()
       .optional()
       .describe('Track offset within album/playlist (0-based)'),
+    offsetUri: z
+      .string()
+      .optional()
+      .describe(
+        'Track URI within an album/playlist; cannot accompany numeric offset',
+      ),
+    positionMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Start position in milliseconds'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     // Normalize aliases
@@ -115,33 +119,62 @@ const playMusic = defineTool({
 
     try {
       const activeDeviceId = await ensureActiveDevice(deviceId);
-
-      await handleSpotifyRequest(async (spotifyApi) => {
-        if (!spotifyUri) {
-          await spotifyApi.player.startResumePlayback(activeDeviceId);
-          return;
-        }
-        if (resolvedType === 'track') {
-          await spotifyApi.player.startResumePlayback(
-            activeDeviceId,
-            undefined,
-            [spotifyUri],
-            undefined,
-            offset,
-          );
-        } else {
-          // album, playlist, artist — use context_uri + optional offset
-          await spotifyApi.player.startResumePlayback(
-            activeDeviceId,
-            spotifyUri,
-            undefined,
-            offset !== undefined ? { position: offset } : undefined,
-          );
-        }
+      if (offset !== undefined && args.offsetUri !== undefined)
+        throw new Error('Choose offset or offsetUri');
+      if (
+        resolvedType === 'track' &&
+        (offset !== undefined || args.offsetUri !== undefined)
+      )
+        throw new Error('Track offsets require an album/playlist context');
+      if (
+        args.offsetUri &&
+        !/^spotify:track:[A-Za-z0-9]{22}$/.test(args.offsetUri)
+      )
+        throw new Error('Invalid offsetUri');
+      const body = {
+        ...(resolvedType === 'track'
+          ? { uris: [spotifyUri] }
+          : { context_uri: spotifyUri }),
+        ...(offset !== undefined ? { offset: { position: offset } } : {}),
+        ...(args.offsetUri ? { offset: { uri: args.offsetUri } } : {}),
+        ...(args.positionMs !== undefined
+          ? { position_ms: args.positionMs }
+          : {}),
+      };
+      await spotifyFetch('me/player/play', {
+        method: 'PUT',
+        query: { device_id: activeDeviceId },
+        body,
       });
-
+      const observed = await spotifyFetch<{
+        device?: { id: string };
+        is_playing?: boolean;
+        progress_ms?: number;
+        item?: { uri: string };
+      }>('me/player');
+      const matches =
+        observed?.device?.id === activeDeviceId &&
+        observed.is_playing === true &&
+        Boolean(observed.item?.uri) &&
+        (resolvedType !== 'track' || observed.item?.uri === spotifyUri) &&
+        (!args.offsetUri || observed.item?.uri === args.offsetUri);
       return {
-        content: [{ type: 'text', text: `Now playing: ${spotifyUri}` }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              accepted: true,
+              playbackObserved: matches,
+              requestedUri: spotifyUri,
+              observed: {
+                deviceId: observed?.device?.id,
+                uri: observed?.item?.uri,
+                isPlaying: observed?.is_playing,
+                progressMs: observed?.progress_ms,
+              },
+            }),
+          },
+        ],
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

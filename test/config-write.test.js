@@ -29,7 +29,12 @@ test('writing through a symlink updates the target and keeps the link', (t) => {
   assert.deepEqual(fs.readdirSync(path.join(dir, 'real')), ['config.json']);
 });
 
-test('existing permissions survive a restrictive umask', (t) => {
+test('existing permissions survive a restrictive umask', {
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX modes do not verify Windows ACLs'
+      : false,
+}, (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'config.json');
   fs.writeFileSync(file, 'old');
@@ -43,7 +48,12 @@ test('existing permissions survive a restrictive umask', (t) => {
   assert.equal(fs.readFileSync(file, 'utf8'), 'new');
 });
 
-test('a new file is created owner-only', (t) => {
+test('a new file is created owner-only', {
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX modes do not verify Windows ACLs'
+      : false,
+}, (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'config.json');
 
