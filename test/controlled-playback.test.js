@@ -63,6 +63,108 @@ test('accepted request with wrong observed track is not reported as verified', a
   assert.equal(JSON.parse(result.content[0].text).playbackObserved, false);
 });
 
+test('seek targets the selected device and distinguishes acceptance from observed position', async (t) => {
+  mockConfig(t);
+  mockHttp(t, [
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'desktop' },
+        item: { uri: 'spotify:track:example', duration_ms: 180000 },
+      },
+    },
+    {
+      url: 'me/player/seek?position_ms=42000&device_id=desktop',
+      method: 'PUT',
+    },
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'desktop' },
+        item: { uri: 'spotify:track:example' },
+        progress_ms: 42500,
+        is_playing: true,
+      },
+    },
+  ]);
+  const client = await connect(t);
+  const result = await client.callTool({
+    name: 'seekToPosition',
+    arguments: { deviceId: 'desktop', positionMs: 42000 },
+  });
+  const value = JSON.parse(result.content[0].text);
+  assert.equal(value.accepted, true);
+  assert.equal(value.positionObserved, true);
+  assert.equal(value.observed.progressMs, 42500);
+});
+
+test('accepted seek does not claim observed position when the player reports an old position', async (t) => {
+  mockConfig(t);
+  mockHttp(t, [
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'desktop' },
+        item: { uri: 'spotify:track:example', duration_ms: 180000 },
+      },
+    },
+    {
+      url: 'me/player/seek?position_ms=42000&device_id=desktop',
+      method: 'PUT',
+    },
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'desktop' },
+        item: { uri: 'spotify:track:example' },
+        progress_ms: 10000,
+        is_playing: true,
+      },
+    },
+  ]);
+  const client = await connect(t);
+  const result = await client.callTool({
+    name: 'seekToPosition',
+    arguments: { deviceId: 'desktop', positionMs: 42000 },
+  });
+  const value = JSON.parse(result.content[0].text);
+  assert.equal(value.accepted, true);
+  assert.equal(value.positionObserved, false);
+});
+
+test('seek does not target a different device or run past the loaded item', async (t) => {
+  mockConfig(t);
+  mockHttp(t, [
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'other' },
+        item: { uri: 'spotify:track:example', duration_ms: 180000 },
+      },
+    },
+    {
+      url: 'me/player',
+      response: {
+        device: { id: 'desktop' },
+        item: { uri: 'spotify:track:example', duration_ms: 180000 },
+      },
+    },
+  ]);
+  const client = await connect(t);
+  const wrongDevice = await client.callTool({
+    name: 'seekToPosition',
+    arguments: { deviceId: 'desktop', positionMs: 42000 },
+  });
+  assert.equal(wrongDevice.isError, true);
+  assert.match(wrongDevice.content[0].text, /not the active playback device/);
+  const pastEnd = await client.callTool({
+    name: 'seekToPosition',
+    arguments: { deviceId: 'desktop', positionMs: 180000 },
+  });
+  assert.equal(pastEnd.isError, true);
+  assert.match(pastEnd.content[0].text, /before the end/);
+});
+
 test('strict mode refuses untargeted controls before network calls', async (t) => {
   const previous = process.env.SPOTIFY_REQUIRE_DEVICE;
   process.env.SPOTIFY_REQUIRE_DEVICE = 'true';

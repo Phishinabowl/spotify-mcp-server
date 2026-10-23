@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { albumTools } from './albums.js';
 import { playTools } from './play.js';
+import { playbackExtraTools } from './playback-extras.js';
 import { playlistTools } from './playlist.js';
 import { readTools } from './read.js';
 import { authorizationTools, sessionAuthEnabled } from './session-auth.js';
@@ -15,6 +16,7 @@ export function createServer() {
   [
     ...readTools,
     ...playTools,
+    ...playbackExtraTools,
     ...albumTools,
     ...playlistTools,
     ...(sessionAuthEnabled() ? authorizationTools(SPOTIFY_SCOPES) : []),

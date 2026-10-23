@@ -5,6 +5,8 @@
 
 A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that enables AI assistants like Cursor & Claude to control Spotify playback and manage playlists.
 
+This [fork](https://github.com/Phishinabowl/spotify-mcp-server) adds local, session-only PKCE authorization; explicit-device playback controls; structured playback observations; and track/history lookup. It is based on [Marcel Marais's server](https://github.com/marcelmarais/spotify-mcp-server). Existing file-backed and HTTP OAuth flows remain available. See [ADAPTATIONS.md](ADAPTATIONS.md) for implementation and verification details.
+
 <details>
 <summary>Contents</summary>
 
@@ -20,6 +22,7 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
   - [Creating a Spotify Developer Application](#creating-a-spotify-developer-application)
   - [Spotify API Configuration](#spotify-api-configuration)
   - [Authentication Process](#authentication-process)
+  - [Session-only PKCE for local MCP clients](#session-only-pkce-for-local-mcp-clients)
 - [Integrating with Claude Desktop, Cursor, and VsCode (Cline)](#integrating-with-claude-desktop-and-cursor)
   - [Streamable HTTP](#streamable-http)
   - [OAuth (MCPHub and other OAuth-capable clients)](#oauth-mcphub-and-other-oauth-capable-clients)
@@ -36,6 +39,10 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
 ## Tools
 
 ### Read Operations
+
+For exact observations, use `getPlaybackState()` rather than the formatted `getNowPlaying()` summary. It returns the active device, item URI, context, millisecond progress, repeat/shuffle state and action flags. `waitForPlaybackState({ deviceId, itemUri?, isPlaying?, minProgressMs?, maxProgressMs?, timeoutMs? })` polls for up to 10 seconds after a command and returns `matched` plus the last observed state; it does not itself send a playback command. Spotify may accept a command before reads reflect it.
+
+`getTrack({ trackId })` resolves one catalog track to its album ID, duration, artists, ISRC when present, and availability fields. `getRecentlyPlayedPage({ limit?, after?, before? })` returns track IDs, timestamps, contexts and pagination cursors; `after` and `before` are Unix milliseconds and cannot be combined. These catalog APIs do not expose the desktop client's quality setting or decoded source bitrate.
 
 1. **searchSpotify**
 
@@ -123,8 +130,38 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
     - **Returns**: Formatted list of followed artists with names and IDs (plus popularity and genres when Spotify provides them), and a cursor for the next page when more remain
     - **Example**: `getFollowedArtists({ limit: 50 })`
 
+11. **getPlaybackState**
+
+    - **Description**: Read structured player state, including the active device, item URI, progress in milliseconds, context, repeat/shuffle settings, and available actions
+    - **Parameters**: None
+    - **Returns**: JSON with `hasState: false` when no player state is available, or the selected state fields
+    - **Example**: `getPlaybackState()`
+
+12. **waitForPlaybackState**
+
+    - **Description**: Poll player state for a selected device and optional item, play state, and progress range
+    - **Parameters**: `deviceId` (required); optional `itemUri`, `isPlaying`, `minProgressMs`, `maxProgressMs`, `timeoutMs` (250–10000; default 5000)
+    - **Returns**: `matched`, number of attempts, and the last observed state; a match is an observation, not proof that an earlier command caused it
+    - **Example**: `waitForPlaybackState({ deviceId: "desktop-device-id", itemUri: "spotify:track:TRACK_ID", isPlaying: true })`
+
+13. **getTrack**
+
+    - **Description**: Resolve one track's catalog metadata, including album ID and available external IDs
+    - **Parameters**: `trackId` (required)
+    - **Returns**: Compact track, album, artist, duration, availability, and ISRC fields when supplied by Spotify
+    - **Example**: `getTrack({ trackId: "TRACK_ID" })`
+
+14. **getRecentlyPlayedPage**
+
+    - **Description**: Read a page of recent playback with cursor support
+    - **Parameters**: Optional `limit`, `after`, or `before`; cursors are Unix milliseconds and cannot be combined
+    - **Returns**: Play timestamps, compact track/context details, and pagination cursors
+    - **Example**: `getRecentlyPlayedPage({ limit: 20 })`
+
 
 ### Play / Create Operations
+
+For device and playback settings, `transferPlayback({ deviceId, play?: false })` targets one discovered device and reports acceptance separately from an immediate observation. `setRepeatMode({ deviceId, state: "off" | "track" | "context" })` and `setShuffle({ deviceId, enabled: boolean })` target the active device and report the same distinction. Use `waitForPlaybackState` or a later `getPlaybackState` read when a command's effect must be confirmed. A progress range can verify a seek near its target. These tools use the existing playback scopes; no additional authorization scope is needed.
 
 1. **playMusic**
 
@@ -133,10 +170,12 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
      - `uri` (string, optional): Spotify URI of the item to play (overrides type and id)
      - `type` (string, optional): Type of item to play (track, album, artist, playlist)
      - `id` (string, optional): Spotify ID of the item to play
-     - `deviceId` (string, optional): ID of the device to play on
-   - **Returns**: Success status
-   - **Example**: `playMusic({ uri: "spotify:track:6rqhFgbbKwnb9MLmUQDhG6" })`
-   - **Alternative**: `playMusic({ type: "track", id: "6rqhFgbbKwnb9MLmUQDhG6" })`
+     - `deviceId` (string): ID of the device to play on, found with `getAvailableDevices`
+     - `positionMs` (number, optional): Starting position in milliseconds
+   - **Returns**: API acceptance and a separate observed playback-state check
+   - **Example**: Search with `searchSpotify`, then `playMusic({ deviceId: "desktop-device-id", uri: "spotify:track:6rqhFgbbKwnb9MLmUQDhG6", positionMs: 30000 })`
+   - **Alternative**: `playMusic({ deviceId: "desktop-device-id", type: "track", id: "6rqhFgbbKwnb9MLmUQDhG6" })`
+   - **Desktop fallback**: If a direct track request is accepted but a later playback read does not show that track, find its album with `searchSpotify`, locate its zero-based position with `getAlbumTracks`, then call `playMusic({ deviceId, context_uri: "spotify:album:ALBUM_ID", offset: POSITION })`. Verify the resulting track with `getNowPlaying`; an accepted request alone is not proof that playback changed.
 
 2. **pausePlayback**
 
@@ -220,6 +259,36 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
    - **Returns**: Success status showing the volume change (e.g., "Volume increased from 50% to 60%")
    - **Example**: `adjustVolume({ adjustment: 10 })` (increase by 10%)
    - **Example**: `adjustVolume({ adjustment: -20 })` (decrease by 20%)
+
+11. **seekToPosition**
+
+   - **Description**: Move to an absolute time within the track or episode already loaded on a selected active device, without starting a different item
+   - **Parameters**:
+     - `deviceId` (string): ID of the active device, found with `getAvailableDevices`
+     - `positionMs` (number): Positive time from the beginning in milliseconds; use `1` for nearly the start
+   - **Returns**: API acceptance and a separate read of the observed item and position. A delayed state update may report `positionObserved=false` even after acceptance.
+   - **Example**: `seekToPosition({ deviceId: "desktop-device-id", positionMs: 90000 })`
+
+12. **transferPlayback**
+
+    - **Description**: Select one currently available Spotify Connect device
+    - **Parameters**: `deviceId` (required); `play` (optional, defaults to false)
+    - **Returns**: API acceptance and a separate immediate device-state observation
+    - **Example**: `transferPlayback({ deviceId: "desktop-device-id", play: false })`
+
+13. **setRepeatMode**
+
+    - **Description**: Set repeat on the selected active device
+    - **Parameters**: `deviceId` and `state` (`off`, `track`, or `context`)
+    - **Returns**: API acceptance and a separate immediate repeat-state observation
+    - **Example**: `setRepeatMode({ deviceId: "desktop-device-id", state: "context" })`
+
+14. **setShuffle**
+
+    - **Description**: Set shuffle on the selected active device
+    - **Parameters**: `deviceId` and `enabled` (boolean)
+    - **Returns**: API acceptance and a separate immediate shuffle-state observation
+    - **Example**: `setShuffle({ deviceId: "desktop-device-id", enabled: false })`
 
 
 ### Album Operations
@@ -314,7 +383,7 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
 ### Installation
 
 ```bash
-git clone https://github.com/marcelmarais/spotify-mcp-server.git
+git clone --branch codex/controlled-playback https://github.com/Phishinabowl/spotify-mcp-server.git
 cd spotify-mcp-server
 npm ci
 npm run build
@@ -328,11 +397,12 @@ npm run build
 4. Fill in the app name and description
 5. Accept the Terms of Service and click "Create"
 6. In your new app's dashboard, you'll see your **Client ID**
-7. Click "Show Client Secret" to reveal your **Client Secret**
-8. Click "Edit Settings" and add a Redirect URI (e.g., `http://127.0.0.1:8888/callback`)
-9. Save your changes
+7. For session-only PKCE, add the Redirect URI `http://127.0.0.1:8765/callback`; this mode needs the public Client ID but no client secret. For the legacy file-backed flow below, use its configured redirect URI (for example, `http://127.0.0.1:8888/callback`) and copy the client secret from the app dashboard.
+8. Save your changes
 
 ### Spotify API Configuration
+
+This file-backed configuration is for the legacy `npm run auth` flow. Local clients using the session-only PKCE setup below do not create `spotify-config.json`.
 
 Create a `spotify-config.json` file in the project root (you can copy and modify the provided example):
 
@@ -385,6 +455,33 @@ npm run auth
 **Note**: The `expiresAt` field is a Unix timestamp (in milliseconds) indicating when the access token expires.
 
 7. **Automatic Token Refresh**: The server will automatically refresh the access token when it expires (typically after 1 hour). The refresh happens transparently using the `refreshToken`, so you don't need to re-authenticate manually. If the refresh fails, you'll need to run `npm run auth` again to re-authenticate.
+
+### Session-only PKCE for local MCP clients
+
+This alternative runs the built server over stdio with `SPOTIFY_SESSION_AUTH=pkce`. It uses the public Client ID and the exact redirect URI `http://127.0.0.1:8765/callback`. It does not need a client secret or `spotify-config.json`. Access and refresh tokens remain in the MCP process's memory; closing or reloading that process requires a new browser authorization. Keep the callback port available while authorizing.
+
+Configure your MCP client to launch `build/index.js` with Node.js 26.8.1 or newer and these environment variables. For example, a Windows Codex `config.toml` entry can use:
+
+```toml
+[mcp_servers.spotify]
+command = 'C:\path\to\node.exe'
+args = ['C:\path\to\spotify-mcp-server\build\index.js']
+enabled = true
+
+[mcp_servers.spotify.env]
+SPOTIFY_CLIENT_ID = "your-public-client-id"
+SPOTIFY_SESSION_AUTH = "pkce"
+SPOTIFY_REQUIRE_DEVICE = "true"
+```
+
+Use absolute paths that exist on your machine. `SPOTIFY_REQUIRE_DEVICE=true` requires an explicit device for the remaining playback controls; `playMusic` and `resumePlayback` already require one in this fork. After adding or editing the MCP entry, reload the client/server and check that its Spotify tools appear.
+
+1. Call `beginSpotifyAuthorization()`. Open the returned URL yourself and approve Spotify's consent page within ten minutes. The callback receipt page does not by itself prove token exchange succeeded.
+2. Call `getSpotifyAuthorizationStatus()` and wait for `phase: "ready"`. This flow requests the scope set needed by the server's available tools; review the consent screen before approving it.
+3. Call `getAvailableDevices()` and use the desired device's ID for controls. If no player is active, `transferPlayback({ deviceId, play: false })` can select one without starting music.
+4. For a specific album track, use `getTrack` or `searchSpotify` to find its album, `getAlbumTracks` to find its zero-based offset, then call `playMusic({ deviceId, context_uri: "spotify:album:ALBUM_ID", offset: 0, positionMs: 0 })`. Confirm the exact item and device with `waitForPlaybackState`; an accepted command can precede the matching read. Direct track-URI playback remains available, but it did not reliably start the requested item in the recorded desktop trials.
+
+`closeSpotifySession()` discards in-memory tokens and cached clients. The session-only flow is independent of the file-backed flow above and of the separate HTTP OAuth mode below.
 
 ## Integrating with Claude Desktop, Cursor, and VsCode [Via Cline model extension](https://marketplace.visualstudio.com/items/?itemName=saoudrizwan.claude-dev)
 

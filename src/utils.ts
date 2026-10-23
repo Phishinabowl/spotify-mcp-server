@@ -6,6 +6,10 @@ import readline from 'node:readline';
 import { fileURLToPath, URL } from 'node:url';
 import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import open from 'open';
+import {
+  isPlaybackCommand,
+  normalizePlaybackResponse,
+} from './playback-response.js';
 import { getSpotifyRequestToken } from './request-context.js';
 import {
   onSessionClosed,
@@ -261,6 +265,10 @@ export async function spotifyFetch<T = unknown>(
     );
   }
 
+  if (isPlaybackCommand(url, method)) {
+    await response.body?.cancel();
+    return undefined as T;
+  }
   // Some endpoints (DELETE, PUT) return empty body
   const text = await response.text();
   if (
@@ -306,7 +314,7 @@ export async function createSpotifyApi(): Promise<SpotifyApi> {
             if (response.status === 401) {
               reportSpotifyTokenRejected(bearerToken);
             }
-            return response;
+            return normalizePlaybackResponse(input, init, response);
           }),
       },
     );
@@ -342,7 +350,18 @@ export async function createSpotifyApi(): Promise<SpotifyApi> {
       refresh_token: config.refreshToken,
     };
 
-    cachedSpotifyApi = SpotifyApi.withAccessToken(config.clientId, accessToken);
+    cachedSpotifyApi = SpotifyApi.withAccessToken(
+      config.clientId,
+      accessToken,
+      {
+        fetch: async (input, init) =>
+          normalizePlaybackResponse(
+            input,
+            init,
+            await globalThis.fetch(input, init),
+          ),
+      },
+    );
     cachedAccessToken = config.accessToken;
     return cachedSpotifyApi;
   }

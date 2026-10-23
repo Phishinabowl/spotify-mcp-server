@@ -24,6 +24,14 @@ export const toolNames = [
   'pausePlayback',
   'skipToNext',
   'skipToPrevious',
+  'seekToPosition',
+  'getPlaybackState',
+  'waitForPlaybackState',
+  'transferPlayback',
+  'setRepeatMode',
+  'setShuffle',
+  'getTrack',
+  'getRecentlyPlayedPage',
   'createPlaylist',
   'addTracksToPlaylist',
   'resumePlayback',
@@ -59,6 +67,8 @@ for (const mode of ['legacy', { pin: '2026-07-28' }]) {
     assert.equal(albums.inputSchema.properties.albumIds.anyOf.length, 2);
     const noArgs = tools.find(({ name }) => name === 'getNowPlaying');
     assert.deepEqual(noArgs.inputSchema.properties, {});
+    const seek = tools.find(({ name }) => name === 'seekToPosition');
+    assert.deepEqual(seek.inputSchema.required.sort(), ['deviceId', 'positionMs']);
     // Use request() to bypass the client's cached-schema validation and test the server boundary.
     for (const [name, args] of [
       ['searchSpotify', { query: 'test', type: 'invalid' }],
@@ -66,6 +76,13 @@ for (const mode of ['legacy', { pin: '2026-07-28' }]) {
       ['searchSpotify', { type: 'track' }],
       ['getMyPlaylists', { offset: -1 }],
       ['setVolume', { volumePercent: 101 }],
+      ['seekToPosition', { deviceId: 'desktop', positionMs: -1 }],
+      ['seekToPosition', { deviceId: 'desktop', positionMs: 0 }],
+      ['transferPlayback', {}],
+      ['setRepeatMode', { deviceId: 'desktop', state: 'invalid' }],
+      ['setShuffle', { deviceId: 'desktop', enabled: 'yes' }],
+      ['getTrack', { trackId: '../bad' }],
+      ['getRecentlyPlayedPage', { limit: 51 }],
       ['getAlbums', { albumIds: Array(21).fill('album') }],
       ['removeUsersSavedTracks', { trackIds: Array(41).fill('track') }],
     ]) {

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
-test('PKCE stdio startup discovers 34 tools and serves status without consent or credential files', async (t) => {
+test('PKCE stdio startup discovers 42 tools and serves status without consent or credential files', async (t) => {
   const client = new Client({ name: 'pkce-smoke', version: '1.0.0' });
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -19,7 +19,7 @@ test('PKCE stdio startup discovers 34 tools and serves status without consent or
   t.after(() => client.close());
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 34);
+  assert.equal(tools.tools.length, 42);
   const status = await client.callTool({
     name: 'getSpotifyAuthorizationStatus',
     arguments: {},

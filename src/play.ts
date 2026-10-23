@@ -70,7 +70,7 @@ const playMusic = defineTool({
     deviceId: z
       .string()
       .optional()
-      .describe('Spotify device ID to play on (auto-selected if omitted)'),
+      .describe('Spotify device ID to play on (required; discover devices first)'),
     device_id: z.string().optional().describe('Alias for deviceId'),
     offset: z
       .number()
@@ -266,6 +266,80 @@ const skipToPrevious = defineTool({
         },
       ],
     };
+  },
+});
+
+const seekToPosition = defineTool({
+  name: 'seekToPosition',
+  description:
+    'Seek within the track or episode currently loaded on an explicitly selected Spotify device. ' +
+    'Use an absolute position in milliseconds; reports command acceptance and observed playback state separately.',
+  schema: {
+    deviceId: z
+      .string()
+      .min(1)
+      .describe('Spotify device ID to seek on; discover devices first'),
+    positionMs: z
+      .number()
+      .int()
+      .positive()
+      .describe('Absolute position from the start in milliseconds (at least 1)'),
+  },
+  handler: async ({ deviceId, positionMs }, _extra: SpotifyHandlerExtra) => {
+    try {
+      const before = await spotifyFetch<{
+        device?: { id?: string };
+        item?: { uri?: string; duration_ms?: number };
+      }>('me/player');
+      if (before?.device?.id !== deviceId)
+        throw new Error('Selected device is not the active playback device');
+      const uri = before.item?.uri;
+      if (!uri) throw new Error('No track or episode is loaded on the selected device');
+      const durationMs = before.item?.duration_ms;
+      if (typeof durationMs === 'number' && positionMs >= durationMs)
+        throw new Error('Position must be before the end of the loaded item');
+
+      await spotifyFetch('me/player/seek', {
+        method: 'PUT',
+        query: { position_ms: positionMs, device_id: deviceId },
+      });
+      const observed = await spotifyFetch<{
+        device?: { id?: string };
+        item?: { uri?: string };
+        progress_ms?: number;
+        is_playing?: boolean;
+      }>('me/player');
+      const sameItem =
+        observed?.device?.id === deviceId && observed.item?.uri === uri;
+      const positionObserved =
+        sameItem &&
+        typeof observed?.progress_ms === 'number' &&
+        Math.abs(observed.progress_ms - positionMs) <= 5000;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            accepted: true,
+            positionObserved,
+            requested: { deviceId, uri, positionMs },
+            observed: {
+              deviceId: observed?.device?.id,
+              uri: observed?.item?.uri,
+              progressMs: observed?.progress_ms,
+              isPlaying: observed?.is_playing,
+            },
+          }),
+        }],
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: `Error seeking playback: ${error instanceof Error ? error.message : String(error)}`,
+        }],
+      };
+    }
   },
 });
 
@@ -615,6 +689,7 @@ export const playTools = [
   pausePlayback,
   skipToNext,
   skipToPrevious,
+  seekToPosition,
   createPlaylist,
   addTracksToPlaylist,
   resumePlayback,
